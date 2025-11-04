@@ -1,0 +1,356 @@
+{
+  "name": "Blood Stock Monitor & Donor Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "634fd105-ae89-461e-b909-aa2d0150f8b1",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1280,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/api/hospitals",
+        "options": {}
+      },
+      "id": "ed8b8d73-de16-4c6a-964a-41f076679f61",
+      "name": "Get All Hospitals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -1056,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract blood inventory from all hospitals\nconst hospitals = $input.all();\nconst lowStockAlerts = [];\n\nfor (const hospital of hospitals) {\n  const hospitalData = hospital.json;\n  const bloodStock = hospitalData.blood_stock || {};\n  \n  for (const [bloodType, units] of Object.entries(bloodStock)) {\n    if (units < 3) {\n      lowStockAlerts.push({\n        hospital_id: hospitalData.id,\n        hospital_name: hospitalData.name,\n        hospital_lat: hospitalData.latitude,\n        hospital_lng: hospitalData.longitude,\n        blood_type: bloodType,\n        units_available: units,\n        severity: units < 2 ? 'critical' : 'warning',\n        timestamp: new Date().toISOString()\n      });\n    }\n  }\n}\n\nreturn lowStockAlerts.map(alert => ({ json: alert }));"
+      },
+      "id": "5fa8c95e-a954-46b4-aa63-ffe58b92b930",
+      "name": "Check Blood Levels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -832,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.units_available }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cd59e2c4-ef3e-4cd2-91df-689eccc3d7b9",
+      "name": "Has Low Stock?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -624,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.severity }}",
+              "rightValue": "critical",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "db9d9581-9d09-4d29-a542-c36463620e10",
+      "name": "Is Critical?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find compatible donors within 10km radius\nconst alert = $input.first().json;\n\n// Simulate finding donors (in production, this would query donor database)\nconst mockDonors = [\n  { id: '1', name: 'Ahmed Hassan', blood_type: alert.blood_type, latitude: alert.hospital_lat + 0.02, longitude: alert.hospital_lng + 0.01, phone: '+971501234567', last_donation_days_ago: 120 },\n  { id: '2', name: 'Sara Ali', blood_type: alert.blood_type, latitude: alert.hospital_lat - 0.03, longitude: alert.hospital_lng + 0.02, phone: '+971501234568', last_donation_days_ago: 95 },\n  { id: '3', name: 'John Smith', blood_type: alert.blood_type, latitude: alert.hospital_lat + 0.01, longitude: alert.hospital_lng - 0.02, phone: '+971501234569', last_donation_days_ago: 100 },\n  { id: '4', name: 'Fatima Ali', blood_type: alert.blood_type, latitude: alert.hospital_lat - 0.01, longitude: alert.hospital_lng + 0.03, phone: '+971501234570', last_donation_days_ago: 110 },\n  { id: '5', name: 'Mohammed Khan', blood_type: alert.blood_type, latitude: alert.hospital_lat + 0.04, longitude: alert.hospital_lng - 0.01, phone: '+971501234571', last_donation_days_ago: 150 }\n];\n\n// Calculate distance using Haversine formula\nfunction calculateDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371; // Earth radius in km\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLon = (lon2 - lon1) * Math.PI / 180;\n  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +\n            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n            Math.sin(dLon/2) * Math.sin(dLon/2);\n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n  return R * c;\n}\n\n// Filter donors: within 10km, eligible to donate (>90 days since last donation)\nconst eligibleDonors = mockDonors\n  .map(donor => ({\n    ...donor,\n    distance_km: calculateDistance(\n      alert.hospital_lat,\n      alert.hospital_lng,\n      donor.latitude,\n      donor.longitude\n    )\n  }))\n  .filter(donor => donor.distance_km < 10 && donor.last_donation_days_ago > 90)\n  .sort((a, b) => a.distance_km - b.distance_km)\n  .slice(0, 5); // Top 5 closest\n\nreturn eligibleDonors.map(donor => ({\n  json: {\n    ...alert,\n    donor_id: donor.id,\n    donor_name: donor.name,\n    donor_phone: donor.phone,\n    donor_distance_km: donor.distance_km.toFixed(1),\n    message: `URGENT: ${alert.blood_type} blood critically needed at ${alert.hospital_name}. You are ${donor.distance_km.toFixed(1)}km away. Can you donate today?`\n  }\n}));"
+      },
+      "id": "21e3e70e-6a1e-4e9a-82db-ce96da1d0e30",
+      "name": "Find Donors (Critical)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -176,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find compatible donors within 15km radius (less urgent)\nconst alert = $input.first().json;\n\nconst mockDonors = [\n  { id: '6', name: 'Ali Hassan', blood_type: alert.blood_type, latitude: alert.hospital_lat + 0.05, longitude: alert.hospital_lng + 0.03, phone: '+971501234572', last_donation_days_ago: 100 },\n  { id: '7', name: 'Layla Ahmed', blood_type: alert.blood_type, latitude: alert.hospital_lat - 0.04, longitude: alert.hospital_lng + 0.05, phone: '+971501234573', last_donation_days_ago: 120 },\n  { id: '8', name: 'Omar Said', blood_type: alert.blood_type, latitude: alert.hospital_lat + 0.06, longitude: alert.hospital_lng - 0.04, phone: '+971501234574', last_donation_days_ago: 95 }\n];\n\nfunction calculateDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371;\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLon = (lon2 - lon1) * Math.PI / 180;\n  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +\n            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n            Math.sin(dLon/2) * Math.sin(dLon/2);\n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n  return R * c;\n}\n\nconst eligibleDonors = mockDonors\n  .map(donor => ({\n    ...donor,\n    distance_km: calculateDistance(\n      alert.hospital_lat,\n      alert.hospital_lng,\n      donor.latitude,\n      donor.longitude\n    )\n  }))\n  .filter(donor => donor.distance_km < 15 && donor.last_donation_days_ago > 90)\n  .sort((a, b) => a.distance_km - b.distance_km)\n  .slice(0, 3);\n\nreturn eligibleDonors.map(donor => ({\n  json: {\n    ...alert,\n    donor_id: donor.id,\n    donor_name: donor.name,\n    donor_phone: donor.phone,\n    donor_distance_km: donor.distance_km.toFixed(1),\n    message: `${alert.blood_type} blood running low at ${alert.hospital_name}. You are ${donor.distance_km.toFixed(1)}km away. Please consider donating this week.`\n  }\n}));"
+      },
+      "id": "d6e5bf9c-c30d-4a92-80b0-2eb80a8d6150",
+      "name": "Find Donors (Warning)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -176,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/donors/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"donor_ids\": [$json.donor_id], \"message\": $json.message, \"urgency\": $json.severity, \"blood_type\": $json.blood_type, \"hospital_name\": $json.hospital_name } }}",
+        "options": {}
+      },
+      "id": "40dbb69c-2bc9-40cd-8573-862d2e72ebf7",
+      "name": "Notify Donors (Critical)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        48,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/donors/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"donor_ids\": [$json.donor_id], \"message\": $json.message, \"urgency\": $json.severity, \"blood_type\": $json.blood_type, \"hospital_name\": $json.hospital_name } }}",
+        "options": {}
+      },
+      "id": "768f3b65-fa13-4f12-aea8-7bb2f42c5dbe",
+      "name": "Notify Donors (Warning)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        48,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate notification results\nconst items = $input.all();\n\nconst summary = {\n  total_donors_notified: items.length,\n  critical_alerts: items.filter(i => i.json.severity === 'critical').length,\n  warning_alerts: items.filter(i => i.json.severity === 'warning').length,\n  blood_types_affected: [...new Set(items.map(i => i.json.blood_type))],\n  hospitals_affected: [...new Set(items.map(i => i.json.hospital_name))],\n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: summary }];"
+      },
+      "id": "d16903f6-3211-4eb9-a1f7-eb2455e9f2ea",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/alerts/blood-monitor-summary",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "601a9f12-21ab-44c7-8398-1ebc9d3f42fd",
+      "name": "Log Summary to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        496,
+        -64
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "42c50fdc-ed28-46b7-ba7e-1505f294650b",
+      "name": "No Action Needed",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get All Hospitals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Hospitals": {
+      "main": [
+        [
+          {
+            "node": "Check Blood Levels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Blood Levels": {
+      "main": [
+        [
+          {
+            "node": "Has Low Stock?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Low Stock?": {
+      "main": [
+        [
+          {
+            "node": "Is Critical?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Action Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Critical?": {
+      "main": [
+        [
+          {
+            "node": "Find Donors (Critical)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Donors (Warning)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Donors (Critical)": {
+      "main": [
+        [
+          {
+            "node": "Notify Donors (Critical)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Donors (Warning)": {
+      "main": [
+        [
+          {
+            "node": "Notify Donors (Warning)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Donors (Critical)": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Donors (Warning)": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Log Summary to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "73bb68be-ce96-4c2c-8cb8-9bbc35362f2a",
+  "meta": {
+    "instanceId": "69dd7f7bd6353ccd48005b4cb196fef0e4c79de54ade0cb3c533616a5df0ccab"
+  },
+  "id": "r1lLeAJmvEb2UsYM",
+  "tags": []
+}
